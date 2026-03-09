@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from functools import lru_cache
-from typing import Callable
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -46,35 +44,36 @@ def _load_credentials_sync() -> Credentials:
     """
     Load or refresh Google OAuth2 credentials.
     Blocking — must be called via asyncio.to_thread() or run_in_executor().
+
+    Requires token.json to already exist. Run setup_auth.py first.
     """
     token_path = os.getenv("GOOGLE_TOKEN_PATH", "token.json")
     credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
 
-    creds: Credentials | None = None
+    if not os.path.exists(credentials_path):
+        raise FileNotFoundError(
+            f"credentials.json not found at '{credentials_path}'. "
+            "Download it from Google Cloud Console → APIs & Services → Credentials."
+        )
 
-    # Load existing token if present
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
+    if not os.path.exists(token_path):
+        raise RuntimeError(
+            "token.json not found. Run this first to authenticate:\n\n"
+            "    uv run python setup_auth.py\n"
+        )
 
-    # Refresh or re-authenticate as needed
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            # Silent refresh — no browser needed
+    creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
+
+    # Silent refresh if expired
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
         else:
-            # First-time auth — opens browser for consent
-            if not os.path.exists(credentials_path):
-                raise FileNotFoundError(
-                    f"Google credentials file not found at '{credentials_path}'. "
-                    "Download it from Google Cloud Console → APIs & Services → Credentials "
-                    "and save it as credentials.json in your backend directory."
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, GOOGLE_SCOPES)
-            creds = flow.run_local_server(port=0)
-
-        # Persist the (new or refreshed) token
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
+            raise RuntimeError(
+                "token.json is invalid or revoked. Delete it and re-run setup_auth.py."
+            )
 
     return creds
 

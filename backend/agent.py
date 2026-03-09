@@ -171,7 +171,7 @@ def inject_dynamic_context(ctx: RunContext[AgentDeps]) -> str:
 def register_tools() -> None:
     """Call once at startup to register all tool modules with the agent."""
     from tools import calendar  # noqa: F401
-    from tools import email     # noqa: F401
+    from tools import gmail     # noqa: F401
     from tools import search    # noqa: F401
     # Notes tools are served via MCP — no direct registration needed.
 

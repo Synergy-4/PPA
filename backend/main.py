@@ -75,9 +75,20 @@ class ApprovalRequest(BaseModel):
 # SSE helpers
 # ---------------------------------------------------------------------------
 
+def _serialize(obj: any) -> any:
+    """Recursively convert Pydantic models and other non-serializable types to dicts."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, dict):
+        return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_serialize(i) for i in obj]
+    return obj
+
+
 def _sse(event_type: str, data: dict) -> str:
-    """Format a single SSE frame."""
-    payload = json.dumps({"type": event_type, **data})
+    """Format a single SSE frame, safely serializing Pydantic models."""
+    payload = json.dumps({"type": event_type, **_serialize(data)})
     return f"data: {payload}\n\n"
 
 
