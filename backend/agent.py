@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.mcp import MCPServerStdio
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 # ---------------------------------------------------------------------------
