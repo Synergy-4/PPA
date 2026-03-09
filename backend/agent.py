@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
@@ -21,7 +21,6 @@ from pydantic_ai.mcp import MCPServerStdio
 from dotenv import load_dotenv
 
 load_dotenv()
-
 # ---------------------------------------------------------------------------
 # Structured output
 # ---------------------------------------------------------------------------
@@ -189,51 +188,77 @@ async def run_agent(
     """
     Run the agent and yield structured event dicts for SSE streaming.
 
-    Event types:
-      {"type": "tool_call",   "tool": str, "args": dict}
-      {"type": "tool_result", "tool": str, "result": Any}
-      {"type": "approval_required", "payload": dict}
-      {"type": "message",     "content": str}
-      {"type": "done",        "response": AgentResponse}
-      {"type": "error",       "detail": str}
+    Uses agent.iter() which gives graph-node-level iteration — the correct
+    API for observing tool calls AND tool results in the same run.
+
+    Event types emitted:
+      {"type": "tool_call",        "tool": str, "args": dict}
+      {"type": "tool_result",      "tool": str, "result": Any}
+      {"type": "message",          "content": str}
+      {"type": "approval_required","payload": dict}
+      {"type": "done",             "response": dict}
+      {"type": "error",            "detail": str}
     """
+    from pydantic_ai import _agent_graph  # noqa: F401
+    from pydantic_ai.messages import (
+        ToolCallPart,
+        ToolReturnPart,
+        TextPart,
+        RetryPromptPart,
+    )
+
     if deps is None:
         deps = AgentDeps()
 
     try:
-        async with agent.run_stream(
+        async with agent.iter(
             user_message,
             deps=deps,
             message_history=message_history or [],
-        ) as result:
-            async for event in result.stream_events():
-                # Tool call started
-                if event.type == "tool_call":
-                    yield {
-                        "type": "tool_call",
-                        "tool": event.tool_name,
-                        "args": event.args,
-                    }
-                # Tool result returned
-                elif event.type == "tool_result":
-                    yield {
-                        "type": "tool_result",
-                        "tool": event.tool_name,
-                        "result": event.result,
-                    }
-                # Partial text delta
-                elif event.type == "text_delta":
-                    yield {"type": "message", "content": event.delta}
+        ) as agent_run:
+            async for node in agent_run:
+                # Each node is either a model request node or a tool call node.
+                # We inspect the parts to emit the right SSE events.
 
-            # Final structured response
-            final: AgentResponse = await result.get_output()
-            if final.requires_approval:
-                yield {"type": "approval_required", "payload": final.approval_payload}
-            yield {"type": "done", "response": final.model_dump()}
+                # Model has just responded — may contain text or tool calls
+                if hasattr(node, "model_response"):
+                    for part in node.model_response.parts:
+                        if isinstance(part, TextPart) and part.content.strip():
+                            yield {"type": "message", "content": part.content}
+                        elif isinstance(part, ToolCallPart):
+                            try:
+                                args = part.args_as_dict()
+                            except Exception:
+                                args = {"raw": str(part.args)}
+                            yield {
+                                "type": "tool_call",
+                                "tool": part.tool_name,
+                                "args": args,
+                            }
+
+                # Tool has just returned its result
+                if hasattr(node, "request"):
+                    for part in node.request.parts:
+                        if isinstance(part, ToolReturnPart):
+                            yield {
+                                "type": "tool_result",
+                                "tool": part.tool_name,
+                                "result": part.content,
+                            }
+                        elif isinstance(part, RetryPromptPart):
+                            yield {
+                                "type": "tool_result",
+                                "tool": getattr(part, "tool_name", "unknown"),
+                                "result": f"[retry] {part.content}",
+                            }
+
+        # All nodes exhausted — pull the final structured output
+        final: AgentResponse = agent_run.result.output
+
+        if final.requires_approval and final.approval_payload:
+            yield {"type": "approval_required", "payload": final.approval_payload}
+
+        yield {"type": "done", "response": final.model_dump()}
 
     except Exception as exc:
         yield {"type": "error", "detail": str(exc)}
-
-
-# Lazy import for type hint only
-from typing import AsyncGenerator  # noqa: E402
