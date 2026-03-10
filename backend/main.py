@@ -14,6 +14,7 @@ import json
 import uuid
 from typing import AsyncGenerator
 
+import logfire
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -21,11 +22,27 @@ from pydantic import BaseModel
 
 from agent import AgentDeps, register_tools, run_agent
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Logfire — configure once at startup.
+# Reads LOGFIRE_TOKEN from the environment automatically.
+# instrument_pydantic_ai() traces every agent run, tool call, and LLM request.
+# ---------------------------------------------------------------------------
+
+logfire.configure()
+logfire.instrument_pydantic_ai()
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Aria Productivity Agent", version="1.0.0")
+
+# Instrument all FastAPI routes — adds request/response spans to every endpoint.
+logfire.instrument_fastapi(app)
 
 app.add_middleware(
     CORSMiddleware,
